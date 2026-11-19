@@ -49,8 +49,8 @@
   }
   /* ── top bar ── */
   .topbar{
-    display:flex;align-items:center;gap:12px;
-    padding:calc(14px + env(safe-area-inset-top)) 18px 10px;
+    display:flex;align-items:center;gap:9px;
+    padding:calc(14px + env(safe-area-inset-top)) 16px 10px;
   }
   .brand{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
   .brand-mark{
@@ -62,15 +62,35 @@
     box-shadow:0 6px 14px -8px rgba(27,42,74,.8);
   }
   .brand-text{display:flex;flex-direction:column;min-width:0}
-  .brand-text strong{font-size:16.5px;letter-spacing:-.3px}
-  .brand-text small{font-size:11.5px;color:var(--ink3);margin-top:2px;letter-spacing:-.1px}
+  .brand-text strong{font-size:16.5px;letter-spacing:-.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .brand-text small{
+    font-size:clamp(10px,2.9vw,11.5px);color:var(--ink3);margin-top:2px;letter-spacing:-.1px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
   .stat-pill{
-    flex:0 0 auto;font-size:12px;font-weight:700;color:var(--ink2);
+    flex:0 0 auto;font-size:11.5px;font-weight:700;color:var(--ink2);
     background:#FFFDF6;border:1px solid var(--line);border-radius:999px;
-    padding:7px 12px;white-space:nowrap;
+    padding:7px 10px;white-space:nowrap;
     box-shadow:0 1px 0 rgba(27,42,74,.03);
   }
   .stat-pill b{color:var(--ink);font-size:12.5px}
+  .sound-btn{
+    appearance:none;flex:0 0 33px;width:33px;height:33px;padding:0;
+    display:grid;place-items:center;cursor:pointer;font-family:inherit;
+    border:1px solid var(--line);border-radius:11px;background:#FFFDF6;
+    color:var(--ink2);line-height:1;
+    transition:transform .12s ease, background .18s ease, border-color .18s ease, opacity .18s ease;
+    box-shadow:0 1px 0 rgba(27,42,74,.03);
+  }
+  .sound-btn .ico{font-size:14.5px;line-height:1;display:block}
+  .sound-btn:active{transform:scale(.93)}
+  .sound-btn.off{background:#F2E9D8;border-color:#E3D4B6;opacity:.9}
+  @media (hover:hover){ .sound-btn:hover{border-color:#DCC9A4} }
+  @media (max-width:350px){
+    .brand-mark{width:36px;height:36px;flex-basis:36px;font-size:19px}
+    .brand-text small{display:none}
+    .brand-text strong{font-size:15.5px}
+  }
   /* ── grade picker ── */
   .grades{padding:2px 16px 0}
   .grade-row{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
@@ -408,6 +428,7 @@
       </div>
     </div>
     <div class="stat-pill" id="learnStat"><b>0</b> / 3,500 외움</div>
+    <button class="sound-btn" id="soundBtn" type="button" aria-pressed="true" aria-label="효과음 끄기" title="효과음 끄기"><span class="ico" id="soundIco" aria-hidden="true">🔊</span></button>
   </header>
 
   <section class="grades" aria-label="급수 선택">
@@ -608,6 +629,145 @@ function el(tag, cls, text){
   return n;
 }
 
+/* ===== 효과음 (Web Audio API 합성 · 외부 파일/요청 0) ===== */
+const SOUND_KEY = "hanja_sound_v1";
+let soundOn = true;
+try { soundOn = localStorage.getItem(SOUND_KEY) !== "off"; } catch(e){ soundOn = true; }
+let actx = null;
+let noiseBuf = null;
+
+function saveSound(){ try { localStorage.setItem(SOUND_KEY, soundOn ? "on" : "off"); } catch(e){} }
+
+/* 사용자 제스처(클릭) 안에서만 호출 — iOS Safari는 이때 만들어야 소리가 난다 */
+function audioOn(){
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if(!AC) return null;
+    if(!actx) actx = new AC();
+    if(actx.state === "suspended" && actx.resume) actx.resume().catch(() => {});
+    return actx;
+  } catch(e){ return null; }
+}
+
+function noise(ctx){
+  if(!noiseBuf || noiseBuf.sampleRate !== ctx.sampleRate){
+    const len = Math.ceil(ctx.sampleRate * 0.16);
+    noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for(let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  }
+  return noiseBuf;
+}
+
+/* 한 음: 사인파 + 은은한 2배음 */
+function tone(ctx, freq, at, dur, vol, type){
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, at);
+  g.gain.exponentialRampToValueAtTime(vol, at + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+  g.connect(ctx.destination);
+  const o = ctx.createOscillator();
+  o.type = type || "sine";
+  o.frequency.setValueAtTime(freq, at);
+  const o2 = ctx.createOscillator();
+  o2.type = "sine";
+  o2.frequency.setValueAtTime(freq * 2, at);
+  const g2 = ctx.createGain();
+  g2.gain.value = 0.16;
+  o.connect(g); o2.connect(g2); g2.connect(g);
+  o.start(at); o2.start(at);
+  o.stop(at + dur + 0.05); o2.stop(at + dur + 0.05);
+}
+
+/* 카드 뒤집기·넘김: "사락~" 종이 마찰음 (노이즈 + 밴드패스 스윕) */
+function sfxPaper(){
+  if(!soundOn) return;
+  const ctx = audioOn(); if(!ctx) return;
+  try {
+    const t = ctx.currentTime + 0.004;
+    const buf = noise(ctx);
+
+    // 1) 종이가 쓸려 내려가는 마찰 — 밴드패스가 위에서 아래로
+    const s1 = ctx.createBufferSource();
+    s1.buffer = buf;
+    s1.playbackRate.value = 0.85 + Math.random() * 0.3;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass"; bp.Q.value = 0.75;
+    bp.frequency.setValueAtTime(2900, t);
+    bp.frequency.exponentialRampToValueAtTime(950, t + 0.105);
+    const g1 = ctx.createGain();
+    g1.gain.setValueAtTime(0.0001, t);
+    g1.gain.exponentialRampToValueAtTime(0.42, t + 0.014);
+    g1.gain.exponentialRampToValueAtTime(0.09, t + 0.075);
+    g1.gain.exponentialRampToValueAtTime(0.0001, t + 0.118);
+    s1.connect(bp); bp.connect(g1); g1.connect(ctx.destination);
+    s1.start(t); s1.stop(t + 0.16);
+
+    // 2) 끝에 남는 여린 고역 "사-" (종이 특유의 바스락거림)
+    const s2 = ctx.createBufferSource();
+    s2.buffer = buf;
+    s2.playbackRate.value = 1.2;
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass"; hp.frequency.value = 4200;
+    const g2 = ctx.createGain();
+    g2.gain.setValueAtTime(0.0001, t + 0.012);
+    g2.gain.exponentialRampToValueAtTime(0.08, t + 0.026);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t + 0.1);
+    s2.connect(hp); hp.connect(g2); g2.connect(ctx.destination);
+    s2.start(t + 0.012); s2.stop(t + 0.11);
+
+    // 3) 카드가 눌리는 아주 여린 저음 (무게감)
+    const s3 = ctx.createBufferSource();
+    s3.buffer = buf;
+    s3.playbackRate.value = 0.35;
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass"; lp.frequency.value = 420; lp.Q.value = 0.7;
+    const g3 = ctx.createGain();
+    g3.gain.setValueAtTime(0.0001, t);
+    g3.gain.exponentialRampToValueAtTime(0.14, t + 0.016);
+    g3.gain.exponentialRampToValueAtTime(0.0001, t + 0.085);
+    s3.connect(lp); lp.connect(g3); g3.connect(ctx.destination);
+    s3.start(t); s3.stop(t + 0.1);
+  } catch(e){}
+}
+
+/* 퀴즈 정답: "딩동댕~" 3음 차임 (C5 → E5 → G5) */
+function sfxCorrect(){
+  if(!soundOn) return;
+  const ctx = audioOn(); if(!ctx) return;
+  try {
+    const t = ctx.currentTime + 0.01;
+    const notes = [[523.25, 0.26, 0.15], [659.25, 0.28, 0.15], [783.99, 0.5, 0.17]];
+    notes.forEach((n, i) => tone(ctx, n[0], t + i * 0.11, n[1], n[2], i === 1 ? "triangle" : "sine"));
+  } catch(e){}
+}
+
+/* 퀴즈 오답: "띵" 깔끔한 단음 */
+function sfxWrong(){
+  if(!soundOn) return;
+  const ctx = audioOn(); if(!ctx) return;
+  try { tone(ctx, 392, ctx.currentTime + 0.01, 0.34, 0.16, "sine"); } catch(e){}
+}
+
+/* 소리 켤 때 확인용 짧은 음 */
+function sfxTick(){
+  if(!soundOn) return;
+  const ctx = audioOn(); if(!ctx) return;
+  try { tone(ctx, 587.33, ctx.currentTime + 0.01, 0.16, 0.12, "sine"); } catch(e){}
+}
+
+function updateSoundUI(){
+  const b = $("soundBtn");
+  if(!b) return;
+  b.classList.toggle("off", !soundOn);
+  b.setAttribute("aria-pressed", String(soundOn));
+  const label = soundOn ? "효과음 끄기" : "효과음 켜기";
+  b.setAttribute("aria-label", label);
+  b.setAttribute("title", label);
+  const ico = $("soundIco");
+  if(ico) ico.textContent = soundOn ? "🔊" : "🔇";
+}
+
 /* ===== 보기 상태 ===== */
 let deck = [];
 let cardIndex = 0;
@@ -687,10 +847,12 @@ function flipCard(){
   const card = $("card");
   flipped = !flipped;
   card.classList.toggle("flipped", flipped);
+  sfxPaper();
 }
 function stepCard(delta){
   cardIndex = (cardIndex + delta + deck.length) % deck.length;
   renderCard();
+  sfxPaper();
 }
 function mark(kind){
   const e = deck[cardIndex];
@@ -855,10 +1017,12 @@ function answer(idx, btn){
   if(right){
     quiz.score += 1;
     store.stats.correct += 1;
+    sfxCorrect();
   } else {
     quiz.wrong.push(q.e);
     store.wrong[q.e.c] = Date.now();
     delete store.learned[q.e.c];
+    sfxWrong();
   }
   save();
   $("qScore").textContent = quiz.score + "점";
@@ -957,6 +1121,12 @@ $("shuffleBtn").addEventListener("click", () => {
   renderCard();
   toast("카드를 섞었어요");
 });
+$("soundBtn").addEventListener("click", () => {
+  soundOn = !soundOn;
+  saveSound();
+  updateSoundUI();
+  if(soundOn) sfxTick();
+});
 document.querySelectorAll(".grade-chip").forEach(b => {
   b.addEventListener("click", () => {
     store.grade = b.dataset.grade;
@@ -1034,6 +1204,7 @@ $("quizFromNote").addEventListener("click", () => {
 applyGrade();
 updateStat();
 renderNote();
+updateSoundUI();
 setMode(store.mode);
 </script>
 </body>
